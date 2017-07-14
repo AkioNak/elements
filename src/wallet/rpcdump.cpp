@@ -1133,8 +1133,11 @@ UniValue dumpblindingkey(const JSONRPCRequest& request)
             "\nDumps the private blinding key for a CT address in hex."
             "\nArguments:\n"
             "1. \"address\"          (string, required) The CT address\n"
+            "\nResult:\n"
+            "\"blindingkey\"         (string) The blinding key in hex\n"
             "\nExample:\n"
             + HelpExampleCli("dumpblindingkey", "\"my address\"")
+            + HelpExampleRpc("dumpblindingkey", "\"my address\"")
         );
 
     LOCK2(cs_main, pwalletMain->cs_wallet);
@@ -1181,11 +1184,12 @@ UniValue dumpissuanceblindingkey(const JSONRPCRequest& request)
             "\nDumps the private blinding key for an asset issuance in wallet."
             "\nArguments:\n"
             "1. \"txid\"          (string, required) The transaction id of the issuance\n"
-            "2. \"vin\"           (numeric, required) The input number of the issuance in the transaction.\n"
+            "2. vin             (numeric, required) The input number of the issuance in the transaction.\n"
             "\nResult:\n"
-            "\"blindingkey\"      (string) The blinding key\n"
+            "\"blindingkey\"      (string) The blinding key in hex\n"
             "\nExample:\n"
-            + HelpExampleCli("dumpissuanceblindingkey", "\"<txid>\", 0")
+            + HelpExampleCli("dumpissuanceblindingkey", "\"<txid>\" 0")
+            + HelpExampleRpc("dumpissuanceblindingkey", "\"<txid>\", 0")
         );
 
     LOCK2(cs_main, pwalletMain->cs_wallet);
@@ -1238,13 +1242,14 @@ UniValue importblindingkey(const JSONRPCRequest& request)
 
     if (request.fHelp || request.params.size() < 2 || request.params.size() > 2)
         throw runtime_error(
-            "importblindingkey \"address\" \"blindinghex\"\n"
+            "importblindingkey \"address\" \"blindingkey\"\n"
             "\nImports a private blinding key in hex for a CT address."
             "\nArguments:\n"
             "1. \"address\"          (string, required) The CT address\n"
-            "2. \"hexkey\"           (string, required) The blinding key in hex\n"
+            "2. \"blindingkey\"      (string, required) The blinding key in hex\n"
             "\nExample:\n"
             + HelpExampleCli("importblindingkey", "\"my blinded CT address\" <blindinghex>")
+            + HelpExampleRpc("importblindingkey", "\"my blinded CT address\", <blindinghex>")
         );
 
     LOCK2(cs_main, pwalletMain->cs_wallet);
@@ -1292,11 +1297,12 @@ UniValue importissuanceblindingkey(const JSONRPCRequest& request)
             "\nImports a private blinding key in hex for an asset issuance."
             "\nArguments:\n"
 
-            "1. \"txid\"          (string, required) The transaction id of the issuance\n"
-            "2. \"vin\"           (numeric, required) The input number of the issuance in the transaction.\n"
-            "3. \"blindingkey\"           (string, required) The blinding key in hex\n"
+            "1. \"txid\"         (string, required) The transaction id of the issuance\n"
+            "2. vin            (numeric, required) The input number of the issuance in the transaction.\n"
+            "3. \"blindingkey\"  (string, required) The blinding key in hex\n"
             "\nExample:\n"
-            + HelpExampleCli("importblindingkey", "\"my blinded CT address\" <blindinghex>")
+            + HelpExampleCli("importissuanceblindingkey", "\"txid\" 0 <blindinghex>")
+            + HelpExampleRpc("importissuanceblindingkey", "\"txid\", 0, <blindinghex>")
         );
 
     LOCK2(cs_main, pwalletMain->cs_wallet);
