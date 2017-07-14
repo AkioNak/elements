@@ -491,7 +491,7 @@ UniValue sendtoaddress(const JSONRPCRequest& request)
 
     if (request.fHelp || request.params.size() < 2 || request.params.size() > 7)
         throw runtime_error(
-            "sendtoaddress \"bitcoinaddress\" amount ( \"comment\" \"comment-to\" subtractfeefromamount assetlabel ignoreblindfail )\n"
+            "sendtoaddress \"bitcoinaddress\" amount ( \"comment\" \"comment-to\" subtractfeefromamount \"assetlabel\" ignoreblindfail )\n"
             "\nSend an amount to a given address.\n"
             + HelpRequiringPassphrase() +
             "\nArguments:\n"
@@ -736,7 +736,7 @@ UniValue getreceivedbyaddress(const JSONRPCRequest& request)
 
     if (request.fHelp || request.params.size() < 1 || request.params.size() > 3)
         throw runtime_error(
-            "getreceivedbyaddress \"address\" ( minconf assetlabel )\n"
+            "getreceivedbyaddress \"address\" ( minconf \"assetlabel\" )\n"
             "\nReturns the total amount received by the given address in transactions with at least minconf confirmations.\n"
             "\nArguments:\n"
             "1. \"address\"         (string, required) The bitcoin address for transactions.\n"
@@ -2038,12 +2038,12 @@ UniValue gettransaction(const JSONRPCRequest& request)
 
     if (request.fHelp || request.params.size() < 1 || request.params.size() > 3)
         throw runtime_error(
-            "gettransaction \"txid\" ( include_watchonly assetlabel )\n"
+            "gettransaction \"txid\" ( include_watchonly \"assetlabel\" )\n"
             "\nGet detailed information about in-wallet transaction <txid>\n"
             "\nArguments:\n"
             "1. \"txid\"                  (string, required) The transaction id\n"
             "2. \"include_watchonly\"     (bool, optional, default=false) Whether to include watch-only addresses in balance calculation and details[]\n"
-            "3. \"assetlabel\"          (string, optional, default=bitcoin) Hex asset id or asset label for balance. \"*\" retrieves all known asset balances.\n"
+            "3. \"assetlabel\"            (string, optional) Hex asset id or asset label for balance.\n"
             "\nResult:\n"
             "{\n"
             "  \"amount\" : x.xxx,        (numeric) The transaction amount in " + CURRENCY_UNIT + "\n"
@@ -2618,9 +2618,9 @@ UniValue getwalletinfo(const JSONRPCRequest& request)
 
     if (request.fHelp || request.params.size() > 1)
         throw runtime_error(
-            "getwalletinfo ( assetlabel )\n"
+            "getwalletinfo ( \"assetlabel\" )\n"
             "Returns an object containing various wallet state info.\n"
-            "1. \"assetlabel\"               (string, optional) Hex asset id or asset label for balance. \"*\" retrieves all known asset balances.\n"
+            "1. \"assetlabel\"               (string, optional) Hex asset id or asset label for balance.\n"
             "\nResult:\n"
             "{\n"
             "  \"walletversion\": xxxxx,       (numeric) the wallet version\n"
@@ -2701,7 +2701,7 @@ UniValue listunspent(const JSONRPCRequest& request)
 
     if (request.fHelp || request.params.size() > 5)
         throw runtime_error(
-            "listunspent ( minconf maxconf  [\"addresses\",...] [include_unsafe] asset )\n"
+            "listunspent ( minconf maxconf  [\"addresses\",...] [include_unsafe] \"asset\" )\n"
             "\nReturns array of unspent transaction outputs with between minconf and maxconf (inclusive) confirmations of the given asset type, or bitcoin if not provided.\n"
             "Optionally filter to only include txouts paid to specified addresses.\n"
             "\nArguments:\n"
@@ -2716,7 +2716,7 @@ UniValue listunspent(const JSONRPCRequest& request)
             "                  because they come from unconfirmed untrusted transactions or unconfirmed\n"
             "                  replacement transactions (cases where we are less sure that a conflicting\n"
             "                  transaction won't be mined).\n"
-            "5.  \"asset\"                 (string, optional, default=bitcoin) The hex asset id or label to filter for. \"*\" is used to list all results.\n"
+            "5.  \"asset\"                (string, optional) The hex asset id or asset label to filter for.\n"
             "[                          (array of json object)\n"
             "  {\n"
             "    \"txid\": \"txid\",        (string) the transaction id \n"

@@ -45,11 +45,11 @@ UniValue getinfo(const JSONRPCRequest& request)
 {
     if (request.fHelp || request.params.size() > 1)
         throw runtime_error(
-            "getinfo\n"
+            "getinfo ( \"assetlabel\" )\n"
             "\nDEPRECATED. Returns an object containing various state info.\n"
 #ifdef ENABLE_WALLET
             "\nArguments:\n"
-            "1. \"assetlabel\"               (string, optional) Hex asset id or asset label for balance. \"*\" retrieves all known asset balances.\n"
+            "1. \"assetlabel\"               (string, optional) Hex asset id or asset label for balance.\n"
 #endif
             "\nResult:\n"
             "{\n"
