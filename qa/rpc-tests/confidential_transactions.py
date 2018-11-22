@@ -3,28 +3,18 @@
 # Distributed under the MIT/X11 software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-# Test the confidential transaction feature of the wallet.
-# Does the following:
-#   a) send coins to a unconfidential address
-#   b) send coins to a confidential address
-#   c) send coins to a unconfidential and confidential address
-#      using the raw transaction interface
-#   d) calls listreceivedbyaddress
-#   e) checks the auditor functionality with importblindingkey
-#       and listreceivedbyaddress
-#   f) checks the behavior of blindrawtransaction in an edge case
-
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import *
 
 class CTTest (BitcoinTestFramework):
 
-    def setup_chain(self):
-        print("Initializing test directory "+self.options.tmpdir)
-        initialize_chain_clean(self.options.tmpdir, 3)
+    def __init__(self):
+        super().__init__()
+        self.num_nodes = 3
+        self.setup_clean_chain = True
 
     def setup_network(self, split=False):
-        self.nodes = start_nodes(3, self.options.tmpdir)
+        self.nodes = start_nodes(self.num_nodes, self.options.tmpdir)
         connect_nodes_bi(self.nodes,0,1)
         connect_nodes_bi(self.nodes,1,2)
         connect_nodes_bi(self.nodes,0,2)
@@ -161,18 +151,27 @@ class CTTest (BitcoinTestFramework):
                                                   {unconfidential_address: value4,
                                                    change_address: unspent[0]["amount"] - value4 - fee, "fee":fee});
         tx = self.nodes[0].blindrawtransaction(tx)
-
         tx_signed = self.nodes[0].signrawtransaction(tx)
         txid = self.nodes[0].sendrawtransaction(tx_signed['hex'])
+        decodedtx = self.nodes[0].decoderawtransaction(tx_signed["hex"])
         self.nodes[0].generate(101)
         self.sync_all()
+
+        unblindfound = False
+        for i in range(len(decodedtx["vout"])):
+            txout = self.nodes[0].gettxout(txid, i)
+            if txout is not None and "asset" in txout:
+                unblindfound = True
+
+        if unblindfound == False:
+            raise Exception("No unconfidential output detected when one should exist")
 
         node0 -= value4
         node2 += value4
         assert_equal(self.nodes[0].getbalance()["bitcoin"], node0)
         assert_equal(self.nodes[1].getbalance("", 1, False, "bitcoin"), node1)
         assert_equal(self.nodes[2].getbalance()["bitcoin"], node2)
-        
+
         # Testing wallet's ability to deblind its own outputs
         addr = self.nodes[0].getnewaddress()
         addr2 = self.nodes[0].getnewaddress()
@@ -212,12 +211,22 @@ class CTTest (BitcoinTestFramework):
 
         print("Assets tests...")
 
+        # Bitcoin is the first issuance
+        assert_equal(self.nodes[0].listissuances()[0]["assetlabel"], "bitcoin")
+        assert_equal(len(self.nodes[0].listissuances()), 1)
+
         # Unblinded issuance of asset
         issued = self.nodes[0].issueasset(1, 1, False)
         assert_equal(self.nodes[0].getwalletinfo()["balance"][issued["asset"]], 1)
         assert_equal(self.nodes[0].getwalletinfo()["balance"][issued["token"]], 1)
         # Quick unblinded reissuance check, making 2*COIN total
         self.nodes[0].reissueasset(issued["asset"], 1)
+
+        # Compare resulting fields with getrawtransaction
+        raw_details = self.nodes[0].getrawtransaction(issued["txid"], 1)
+        assert_equal(issued["entropy"], raw_details["vin"][issued["vin"]]["issuance"]["assetEntropy"])
+        assert_equal(issued["asset"], raw_details["vin"][issued["vin"]]["issuance"]["asset"])
+        assert_equal(issued["token"], raw_details["vin"][issued["vin"]]["issuance"]["token"])
 
         testAssetHex = issued["asset"]
         self.nodes[0].generate(1)
@@ -341,13 +350,13 @@ class CTTest (BitcoinTestFramework):
         addr2 = txdet2[len(txdet2)-1]["address"]
         addr3 = txdet3[len(txdet3)-1]["address"]
 
-        assert_equal(len(self.nodes[0].listissuances()), 5);
+        assert_equal(len(self.nodes[0].listissuances()), 6);
         self.nodes[0].importaddress(addr1)
         self.nodes[0].importaddress(addr2)
         self.nodes[0].importaddress(addr3)
 
         issuances = self.nodes[0].listissuances()
-        assert_equal(len(issuances), 8)
+        assert_equal(len(issuances), 9)
 
         for issue in issuances:
             if issue['txid'] == redata1["txid"] and issue['vin'] == redata1["vin"]:
@@ -465,6 +474,20 @@ class CTTest (BitcoinTestFramework):
         blinded = self.nodes[0].blindrawtransaction(funded["hex"])
         signed = self.nodes[0].signrawtransaction(blinded)
         txid = self.nodes[0].sendrawtransaction(signed["hex"])
+
+        # Test corner case where wallet appends a OP_RETURN output, yet doesn't blind it
+        # due to the fact that the output value is 0-value and input pedersen commitments
+        # self-balance. This is rare corner case, but ok.
+        unblinded = self.nodes[0].validateaddress(self.nodes[0].getnewaddress())["unconfidential"]
+        self.nodes[0].sendtoaddress(unblinded, self.nodes[0].getbalance()["bitcoin"], "", "", True)
+        # Make tx with blinded destination and change outputs only
+        self.nodes[0].sendtoaddress(self.nodes[0].getnewaddress(), self.nodes[0].getbalance()["bitcoin"]/2)
+        # Send back again, this transaction should have 3 outputs, all unblinded
+        txid = self.nodes[0].sendtoaddress(unblinded, self.nodes[0].getbalance()["bitcoin"], "", "", True)
+        outputs = self.nodes[0].getrawtransaction(txid, 1)["vout"]
+        assert_equal(len(outputs), 3)
+        assert("value" in outputs[0] and "value" in outputs[1] and "value" in outputs[2])
+        assert_equal(outputs[2]["scriptPubKey"]["type"], 'nulldata')
 
 if __name__ == '__main__':
     CTTest ().main ()

@@ -395,27 +395,47 @@ static void MutateTxAddOutMultiSig(CMutableTransaction& tx, const std::string& s
 static void MutateTxAddOutData(CMutableTransaction& tx, const std::string& strInput)
 {
     CAmount value = 0;
+ 
+    // separate [VALUE:]DATA[:ASSET] in string
+    std::vector<std::string> vStrInputParts;
+    boost::split(vStrInputParts, strInput, boost::is_any_of(":"));
 
-    // separate [VALUE:]DATA in string
-    size_t pos = strInput.find(':');
-
-    if (pos==0)
+    // Check that there are enough parameters
+    if (vStrInputParts[0].empty())
         throw std::runtime_error("TX output value not specified");
 
-    if (pos != std::string::npos) {
-        // Extract and validate VALUE
-        value = ExtractAndValidateValue(strInput.substr(0, pos));
+    if (vStrInputParts.size()>3)
+        throw std::runtime_error("too many separators");
+    
+    std::vector<unsigned char> data;
+    CAsset asset(Params().GetConsensus().pegged_asset);
+    
+    if (vStrInputParts.size()==1) {
+        std::string strData = vStrInputParts[0];
+        if (!IsHex(strData))
+            throw std::runtime_error("invalid TX output data");
+        data = ParseHex(strData);
+
+    } else {
+        value = ExtractAndValidateValue(vStrInputParts[0]);
+        std::string strData = vStrInputParts[1];
+        if (!IsHex(strData))
+            throw std::runtime_error("invalid TX output data");
+        data = ParseHex(strData);
+
+        if (vStrInputParts.size()==3) {
+            std::string strAsset = vStrInputParts[2];
+            if (!IsHex(strAsset))
+                throw std::runtime_error("invalid TX output asset type");
+
+            asset.SetHex(strAsset);
+            if (asset.IsNull()) {
+                throw std::runtime_error("invalid TX output asset type");
+            }
+        }
     }
 
-    // extract and validate DATA
-    std::string strData = strInput.substr(pos + 1, std::string::npos);
-
-    if (!IsHex(strData))
-        throw std::runtime_error("invalid TX output data");
-
-    std::vector<unsigned char> data = ParseHex(strData);
-
-    CTxOut txout(Params().GetConsensus().pegged_asset, value, CScript() << OP_RETURN << data);
+    CTxOut txout(asset, value, CScript() << OP_RETURN << data);
     tx.vout.push_back(txout);
 }
 
@@ -701,10 +721,10 @@ static void MutateTxSign(CMutableTransaction& tx, const std::string& flagStr)
 
         // ... and merge in other signatures:
         BOOST_FOREACH(const CTransaction& txv, txVariants)
-            sigdata = CombineSignatures(prevPubKey, MutableTransactionNoWithdrawsSignatureChecker(&mergedTx, i, amount), sigdata, DataFromTransaction(txv, i));
+            sigdata = CombineSignatures(prevPubKey, MutableTransactionSignatureChecker(&mergedTx, i, amount), sigdata, DataFromTransaction(txv, i));
         UpdateTransaction(mergedTx, i, sigdata);
 
-        if (!VerifyScript(txin.scriptSig, prevPubKey, (mergedTx.wit.vtxinwit.size() > i) ? &mergedTx.wit.vtxinwit[i].scriptWitness : NULL, STANDARD_SCRIPT_VERIFY_FLAGS, MutableTransactionNoWithdrawsSignatureChecker(&mergedTx, i, amount)))
+        if (!VerifyScript(txin.scriptSig, prevPubKey, (mergedTx.wit.vtxinwit.size() > i) ? &mergedTx.wit.vtxinwit[i].scriptWitness : NULL, STANDARD_SCRIPT_VERIFY_FLAGS, MutableTransactionSignatureChecker(&mergedTx, i, amount)))
             fComplete = false;
     }
 
@@ -714,58 +734,6 @@ static void MutateTxSign(CMutableTransaction& tx, const std::string& flagStr)
     }
 
     tx = mergedTx;
-}
-
-static void MutateTxPeginSign(CMutableTransaction& tx, const std::string& flagStr)
-{
-    if (!registers.count("peginkeys"))
-        throw std::runtime_error("peginkeys register variable must be set.");
-    UniValue keysObj = registers["peginkeys"];
-
-    if (!keysObj.isObject())
-        throw std::runtime_error("peginkeysObjs must be an object");
-    std::map<std::string,UniValue::VType> types = boost::assign::map_list_of("contract",UniValue::VSTR)("txoutproof",UniValue::VSTR)("tx",UniValue::VSTR)("nout",UniValue::VNUM);
-    if (!keysObj.checkObject(types))
-        throw std::runtime_error("peginkeysObjs internal object typecheck fail");
-
-    std::vector<unsigned char> contractData(ParseHexUV(keysObj["contract"], "contract"));
-    std::vector<unsigned char> txoutproofData(ParseHexUV(keysObj["txoutproof"], "txoutproof"));
-    std::vector<unsigned char> txData(ParseHexUV(keysObj["tx"], "tx"));
-    int nOut = atoi(keysObj["nout"].getValStr());
-
-    if (contractData.size() != 40)
-        throw std::runtime_error("contract must be 40 bytes");
-
-    CDataStream ssProof(txoutproofData,SER_NETWORK, PROTOCOL_VERSION);
-    Sidechain::Bitcoin::CMerkleBlock merkleBlock;
-    ssProof >> merkleBlock;
-
-    CDataStream ssTx(txData, SER_NETWORK, PROTOCOL_VERSION);
-    Sidechain::Bitcoin::CTransactionRef txBTCRef;
-    ssTx >> txBTCRef;
-    Sidechain::Bitcoin::CTransaction txBTC(*txBTCRef);
-
-    std::vector<uint256> transactionHashes;
-    std::vector<unsigned int> transactionIndices;
-    if (!CheckBitcoinProof(merkleBlock.header.GetHash(), merkleBlock.header.nBits) ||
-            merkleBlock.txn.ExtractMatches(transactionHashes, transactionIndices) != merkleBlock.header.hashMerkleRoot ||
-            transactionHashes.size() != 1 ||
-            transactionHashes[0] != txBTC.GetHash())
-        throw std::runtime_error("txoutproof is invalid or did not match tx");
-
-    if (nOut < 0 || (unsigned int) nOut >= txBTC.vout.size())
-        throw std::runtime_error("nout must be >= 0, < txout count");
-
-    CScript scriptSig;
-    scriptSig << contractData;
-    scriptSig.PushWithdraw(txoutproofData);
-    scriptSig.PushWithdraw(txData);
-    scriptSig << nOut;
-
-    //TODO: Verify the withdraw proof
-    for (unsigned int i = 0; i < tx.vin.size(); i++) {
-        tx.vin[i].scriptSig = scriptSig;
-    }
 }
 
 class Secp256k1Init
@@ -815,17 +783,13 @@ static void MutateTx(CMutableTransaction& tx, const std::string& command,
     } else if (command == "blind") {
         if (!ecc) { ecc.reset(new Secp256k1Init()); }
         MutateTxBlind(tx, commandVal);
-    } else if (command == "peginsign")
-        MutateTxPeginSign(tx, commandVal);
-
-    else if (command == "load")
+    } else if (command == "load") {
         RegisterLoad(commandVal);
-
-    else if (command == "set")
+    } else if (command == "set") {
         RegisterSet(commandVal);
-
-    else
+    } else {
         throw std::runtime_error("unknown command");
+    }
 }
 
 static void OutputTxJSON(const CTransaction& tx)
@@ -906,7 +870,7 @@ static int CommandLineRawTx(int argc, char* argv[])
             if (strHexTx == "-")                 // "-" implies standard input
                 strHexTx = readStdin();
 
-            if (!DecodeHexTx(tx, strHexTx, true))
+            if (!DecodeHexTx(tx, strHexTx))
                 throw std::runtime_error("invalid transaction encoding");
 
             startArg = 2;

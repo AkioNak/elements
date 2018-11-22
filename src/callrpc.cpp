@@ -86,7 +86,7 @@ UniValue CallRPC(const std::string& strMethod, const UniValue& params, bool conn
     int port = GetArg(strport, BaseParams().RPCPort());
 
     if (connectToMainchain) {
-        strhost = "-mainchainhost";
+        strhost = "-mainchainrpchost";
         strport = "-mainchainrpcport";
         strpassword = "-mainchainrpcpassword";
         struser = "-mainchainrpcuser";
@@ -111,7 +111,7 @@ UniValue CallRPC(const std::string& strMethod, const UniValue& params, bool conn
 
     // Get credentials
     std::string strRPCUserColonPass;
-    if (GetArg("-rpcpassword", "") == "") {
+    if (GetArg(strpassword, "") == "") {
 
         // Try fall back to cookie-based authentication if no password is provided
         if (!connectToMainchain && !GetAuthCookie(&strRPCUserColonPass)) {
@@ -178,31 +178,32 @@ UniValue CallRPC(const std::string& strMethod, const UniValue& params, bool conn
     return reply;
 }
 
-bool IsConfirmedBitcoinBlock(const uint256& genesishash, const uint256& hash, int nMinConfirmationDepth)
+bool IsConfirmedBitcoinBlock(const uint256& hash, const int nMinConfirmationDepth, const int nbTxs)
 {
-
     try {
         UniValue params(UniValue::VARR);
-        params.push_back(UniValue(0));
-        UniValue reply = CallRPC("getblockhash", params, true);
+        params.push_back(hash.GetHex());
+        UniValue reply = CallRPC("getblockheader", params, true);
         if (!find_value(reply, "error").isNull())
             return false;
         UniValue result = find_value(reply, "result");
-        if (!result.isStr())
-            return false;
-        if (result.get_str() != genesishash.GetHex())
-            return false;
-
-        params = UniValue(UniValue::VARR);
-        params.push_back(hash.GetHex());
-        reply = CallRPC("getblock", params, true);
-        if (!find_value(reply, "error").isNull())
-            return false;
-        result = find_value(reply, "result");
         if (!result.isObject())
             return false;
-        result = find_value(result.get_obj(), "confirmations");
-        return result.isNum() && result.get_int64() >= nMinConfirmationDepth;
+
+        UniValue confirmations = find_value(result.get_obj(), "confirmations");
+        if (!confirmations.isNum() || confirmations.get_int64() < nMinConfirmationDepth) {
+            return false;
+        }
+
+        // Only perform extra test if nbTxs has been provided (non-zero).
+        if (nbTxs != 0) {
+            UniValue nTx = find_value(result.get_obj(), "nTx");
+            if (!nTx.isNum() || nTx.get_int64() != nbTxs) {
+                LogPrintf("ERROR: Invalid number of transactions in merkle block for %s", 
+                        hash.GetHex());
+                return false;
+            }
+        }
     } catch (CConnectionFailed& e) {
         LogPrintf("ERROR: Lost connection to bitcoind RPC, you will want to restart after fixing this!\n");
         return false;

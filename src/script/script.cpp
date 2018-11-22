@@ -215,149 +215,41 @@ unsigned int CScript::GetSigOpCount(const CScript& scriptSig) const
     return subscript.GetSigOpCount(true);
 }
 
-bool CScript::IsWithdrawProof() const
+bool CScript::IsPegoutScript(uint256& genesis_hash, CScript& pegout_scriptpubkey) const
 {
-    // Format is <contract> <merkleBlock>xN <N> <locking tx>xM <M> <output index>
-    // for at least 6 total pushes
-    // Here we simply check that the script is push-only and has at least 6 pushes.
-    // The output must be P2SH to the appropriate script
     const_iterator pc = begin();
-    opcodetype opcode;
-    uint32_t push_count = 0;
-    while (pc < end())
-    {
-        if (!GetOp(pc, opcode))
-            return false;
-        if (opcode > OP_16 || opcode == OP_RESERVED)
-            return false;
-        push_count++;
-    }
-    return push_count >= 6;
-}
-
-bool CScript::IsWithdrawLock() const
-{
-    // Locks look like [<chaindest> OP_DROP] <genesishash> OP_WITHDRAWPROOFVERIFY
-    // This function must return true for an OP_WITHDRAWPROOFVERIFY opcode to execute.
-    // We require all pushes be in their minimal form, to make inspection of
-    // withdraw locks a purely byte-matching affair.
-    const_iterator pc = begin();
-    vector<unsigned char> data;
+    std::vector<unsigned char> data;
     opcodetype opcode;
 
-    if (!GetOp(pc, opcode, data))
+    // OP_RETURN
+    if (!GetOp(pc, opcode, data) || opcode != OP_RETURN) {
         return false;
-    if (opcode == 24 && data.size() == 24) { // 4 byte type + 20 byte destination is suggested
-        if (!GetOp(pc, opcode, data) || opcode != OP_DROP || data.size() != 0)
-            return false;
-
-        if (!GetOp(pc, opcode, data))
-            return false;
     }
 
-    if (opcode != 32 || data.size() != 32)
+    if (!GetOp(pc, opcode, data) || data.size() != 32 ) {
         return false;
-
-    if (!GetOp(pc, opcode, data) || opcode != OP_WITHDRAWPROOFVERIFY || data.size() != 0)
+    }
+    genesis_hash = uint256(data);
+  
+    // Read in parent chain destination scriptpubkey
+    if (!GetOp(pc, opcode, data) || data.size() == 0 ) {
         return false;
-
-    if (GetOp(pc, opcode))
-        return false;
+    }
+    pegout_scriptpubkey = CScript(data.begin(), data.end());
 
     return true;
 }
 
-uint256 CScript::GetWithdrawLockGenesisHash() const
+bool CScript::IsPegoutScript(const uint256& genesis_hash_check) const
 {
-    assert(IsWithdrawLock());
-
-    const_iterator pc = begin();
-    opcodetype opcode;
-    vector<unsigned char> vchgenesishash;
-
-    bool ret;
-    ret = GetOp(pc, opcode, vchgenesishash);
-    assert(ret);
-    if (vchgenesishash.size() != 32) {
-        ret = GetOp(pc, opcode);
-        assert(ret && opcode == OP_DROP);
-        ret = GetOp(pc, opcode, vchgenesishash);
-        assert(ret);
+    uint256 genesis_hash;
+    CScript pegout_scriptpubkey;
+    // Ensure hash matches parent chain genesis block
+    if (this->IsPegoutScript(genesis_hash, pegout_scriptpubkey) &&
+        genesis_hash_check == genesis_hash) {
+        return true;
     }
-    assert(vchgenesishash.size() == 32);
-    return uint256(vchgenesishash);
-}
-
-static bool PopWithdrawPush(vector<vector<unsigned char> >& pushes, vector<unsigned char> *read=NULL) {
-    if (pushes.empty())
-        return false;
-    int pushCount = CScriptNum(pushes.back(), false).getint();
-    pushes.pop_back();
-    if (pushCount < 0 || pushCount > 2000 || pushes.size() < size_t(pushCount))
-        return false;
-    for (int i = pushCount; i > 0; i--) {
-        if (i != 1 && pushes[pushes.size() - i].size() != 520)
-            return false;
-        if (read != NULL) {
-            const vector<unsigned char> &push = pushes[pushes.size() - i];
-            read->insert(read->end(), push.begin(), push.end());
-        }
-    }
-    for (int i = 0; i < pushCount; i++)
-        pushes.pop_back();
-    return true;
-}
-
-COutPoint CScript::GetWithdrawSpent() const
-{
-    assert(IsWithdrawProof());
-
-    try {
-        const_iterator pc = begin();
-        opcodetype opcode;
-
-        // We have to read the script from back-to-front, so we stack-ize it
-        vector<vector<unsigned char> > pushes;
-        pushes.reserve(6);
-        while (pc < end()) {
-            pushes.push_back(vector<unsigned char>());
-            assert(GetOp(pc, opcode, pushes.back()));
-            if (opcode <= OP_16 && opcode >= OP_1)
-                pushes.back().push_back(opcode - OP_1 + 1);
-            else if (opcode == OP_1NEGATE)
-                pushes.back().push_back(0x81);
-        }
-
-        int ntxOut = CScriptNum(pushes.back(), false).getint();
-        pushes.pop_back();
-
-        vector<unsigned char> vTx;
-        if (!PopWithdrawPush(pushes, &vTx))
-            return COutPoint();
-        Sidechain::Bitcoin::CTransactionRef tx;
-        CDataStream(vTx, SER_NETWORK, PROTOCOL_VERSION) >> tx;
-
-        if (ntxOut < 0 || (unsigned int)ntxOut >= tx->vout.size())
-            return COutPoint();
-
-        return COutPoint(tx->GetHash(), ntxOut);
-    } catch (std::exception& e) {
-        return COutPoint();
-    }
-}
-
-void CScript::PushWithdraw(const vector<unsigned char> push) {
-    int64_t pushCount = 0;
-    for (vector<unsigned char>::const_iterator it = push.begin(); it < push.end(); pushCount++) {
-        if (push.end() - it < 520) {
-            *this << vector<unsigned char>(it, push.end());
-            it = push.end();
-        } else {
-            *this << vector<unsigned char>(it, it + 520);
-            it += 520;
-        }
-    }
-    *this << pushCount;
+    return false;
 }
 
 bool CScript::IsPayToScriptHash() const

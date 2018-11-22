@@ -33,7 +33,7 @@ CAsset policyAsset;
      *   DUP CHECKSIG DROP ... repeated 100 times... OP_1
      */
 
-bool IsStandard(const CScript& scriptPubKey, txnouttype& whichType, const bool witnessEnabled)
+bool IsStandard(const CScript& scriptPubKey, txnouttype& whichType)
 {
     std::vector<std::vector<unsigned char> > vSolutions;
     if (!Solver(scriptPubKey, whichType, vSolutions))
@@ -54,13 +54,10 @@ bool IsStandard(const CScript& scriptPubKey, txnouttype& whichType, const bool w
     else if (whichType == TX_TRUE)
         return false;
 
-    else if (!witnessEnabled && (whichType == TX_WITNESS_V0_KEYHASH || whichType == TX_WITNESS_V0_SCRIPTHASH))
-        return false;
-
     return whichType != TX_NONSTANDARD;
 }
 
-bool IsStandardTx(const CTransaction& tx, std::string& reason, const bool witnessEnabled)
+bool IsStandardTx(const CTransaction& tx, std::string& reason)
 {
     if (tx.nVersion > CTransaction::MAX_STANDARD_VERSION || tx.nVersion < 1) {
         reason = "version";
@@ -85,29 +82,20 @@ bool IsStandardTx(const CTransaction& tx, std::string& reason, const bool witnes
         }
     }
 
-    unsigned int nDataOut = 0;
     txnouttype whichType;
     BOOST_FOREACH(const CTxOut& txout, tx.vout) {
-        if (!txout.IsFee() && !::IsStandard(txout.scriptPubKey, whichType, witnessEnabled)) {
+        if (!::IsStandard(txout.scriptPubKey, whichType) && !txout.IsFee()) {
             reason = "scriptpubkey";
             return false;
         }
 
-        if (whichType == TX_NULL_DATA)
-            nDataOut++;
-        else if ((whichType == TX_MULTISIG) && (!fIsBareMultisigStd)) {
+        if ((whichType == TX_MULTISIG) && (!fIsBareMultisigStd)) {
             reason = "bare-multisig";
             return false;
         } else if ((txout.nAsset.IsExplicit() && txout.nAsset.GetAsset() == policyAsset) && txout.IsDust(dustRelayFee)) {
             reason = "dust";
             return false;
         }
-    }
-
-    // only one OP_RETURN txout is permitted
-    if (nDataOut > 1) {
-        reason = "multi-op-return";
-        return false;
     }
 
     return true;
@@ -120,16 +108,11 @@ bool AreInputsStandard(const CTransaction& tx, const CCoinsViewCache& mapInputs)
 
     for (unsigned int i = 0; i < tx.vin.size(); i++)
     {
-        const CTxOut& prev = mapInputs.GetOutputFor(tx.vin[i]);
-
-        if (prev.scriptPubKey.IsWithdrawLock()) {
-            if (!tx.vin[i].scriptSig.IsWithdrawProof()) {
-                if (tx.vout.size() < i)
-                    if (!tx.vout[i].nValue.IsExplicit() || tx.vout[i].nValue.GetAmount() > MAX_MONEY / 100)
-                        return false;
-            }
+        if (tx.vin[i].m_is_pegin) {
+            // This deals with p2sh in general only
             continue;
         }
+        const CTxOut& prev = mapInputs.GetOutputFor(tx.vin[i]);
 
         // Biggest 'standard' txin is a 15-of-15 P2SH multisig with compressed
         // keys. (remember the 520 byte limit on redeemScript size) That works
@@ -178,7 +161,7 @@ bool IsWitnessStandard(const CTransaction& tx, const CCoinsViewCache& mapInputs)
         if (tx.wit.vtxinwit.size() <= i || tx.wit.vtxinwit[i].scriptWitness.IsNull())
             continue;
 
-        const CTxOut &prev = mapInputs.GetOutputFor(tx.vin[i]);
+        const CTxOut &prev = tx.vin[i].m_is_pegin ? GetPeginOutputFromWitness(tx.wit.vtxinwit[i].m_pegin_witness) :  mapInputs.GetOutputFor(tx.vin[i]);
 
         // get the scriptPubKey corresponding to this input:
         CScript prevScript = prev.scriptPubKey;

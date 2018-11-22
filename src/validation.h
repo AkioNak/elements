@@ -32,6 +32,10 @@
 #include <boost/unordered_map.hpp>
 #include <boost/filesystem/path.hpp>
 
+namespace Sidechain { namespace Bitcoin {
+class CTransaction;
+}}
+
 class CBlockIndex;
 class CBlockTreeDB;
 class CBloomFilter;
@@ -134,8 +138,6 @@ static const bool DEFAULT_CHECKPOINTS_ENABLED = true;
 static const bool DEFAULT_TXINDEX = false;
 static const unsigned int DEFAULT_BANSCORE_THRESHOLD = 100;
 
-/** Default for -mempoolreplacement */
-static const bool DEFAULT_ENABLE_REPLACEMENT = true;
 /** Default for using fee filter */
 static const bool DEFAULT_FEEFILTER = true;
 
@@ -146,6 +148,12 @@ static const unsigned int MAX_BLOCKS_TO_ANNOUNCE = 8;
 static const int MAX_UNCONNECTING_HEADERS = 10;
 
 static const bool DEFAULT_PEERBLOOMFILTERS = false;
+
+/** The minimum version for the parent chain node.
+ *  We need v0.16.3 to get the nTx field in getblockheader and inflation fix.
+ *  Note that Elements-based parent chains may not have fixes based on this
+ *  version check! */
+static const int MIN_PARENT_NODE_VERSION = 160300; // 0.16.3
 
 struct BlockHasher
 {
@@ -178,7 +186,6 @@ extern CFeeRate minRelayTxFee;
 extern CAmount maxTxFee;
 /** If the tip is older than this (in seconds), the node is considered to be in initial block download. */
 extern int64_t nMaxTipAge;
-extern bool fEnableReplacement;
 
 /** Block hash whose ancestors we will assume to have valid scripts without checking them. */
 extern uint256 hashAssumeValid;
@@ -265,6 +272,12 @@ void UnloadBlockIndex();
 void ThreadScriptCheck();
 /** Check if bitcoind connection via RPC is correctly working*/
 bool BitcoindRPCCheck(bool init);
+bool GetAmountFromParentChainPegin(CAmount& amount, const Sidechain::Bitcoin::CTransaction& txBTC, unsigned int nOut);
+bool GetAmountFromParentChainPegin(CAmount& amount, const CTransaction& txBTC, unsigned int nOut);
+/** Checks pegin witness for validity */
+bool IsValidPeginWitness(const CScriptWitness& pegin_witness, const COutPoint& prevout, bool check_depth = true);
+/** Extracts an output from pegin witness for evaluation as a normal output */
+CTxOut GetPeginOutputFromWitness(const CScriptWitness& pegin_witness);
 /** Check whether we are doing an initial block download (synchronizing from disk or network) */
 bool IsInitialBlockDownload();
 /** Format a string that describes several potential problems detected by the core.
@@ -373,7 +386,7 @@ int64_t GetTransactionSigOpCost(const CTransaction& tx, const CCoinsViewCache& i
  * instead of being performed inline.
  */
 bool CheckInputs(const CTransaction& tx, CValidationState &state, const CCoinsViewCache &view, bool fScriptChecks,
-                 unsigned int flags, bool cacheStore, PrecomputedTransactionData& txdata, std::set<std::pair<uint256, COutPoint> >& setWithdrawsSpent,
+                 unsigned int flags, bool cacheStore, PrecomputedTransactionData& txdata, std::set<std::pair<uint256, COutPoint> >& setPeginsSpent,
                  std::vector<CCheck*> *pvChecks = NULL);
 
 /** Apply the effects of this transaction on the UTXO set represented by view */
@@ -391,18 +404,21 @@ namespace Consensus {
  * This does not modify the UTXO set. This does not check scripts and sigs.
  * Preconditions: tx.IsCoinBase() is false.
  */
-bool CheckTxInputs(const CTransaction& tx, CValidationState& state, const CCoinsViewCache& inputs, int nSpendHeight, std::set<std::pair<uint256, COutPoint> >& setWithdrawsSpent, std::vector<CCheck*> *pvChecks, const bool cacheStore);
+bool CheckTxInputs(const CTransaction& tx, CValidationState& state, const CCoinsViewCache& inputs, int nSpendHeight, std::set<std::pair<uint256, COutPoint> >& setPeginsSpent, std::vector<CCheck*> *pvChecks, const bool cacheStore, bool fScriptChecks);
 
 } // namespace Consensus
 
 /**
  * Verify the transaction's outputs spend exactly what its inputs provide, plus some excess amount.
  *
+ * This also checks rangeproofs, surjection proofs, and issuances of assets and re-issuance tokens.
+ * The function assumes that IsValidPeginWitness() returns true on all peg-in inputs.
+ *
  * @param[in] view   CCoinsViewCache to find necessary outputs
  * @param[in] tx     transaction for which we are checking totals
- * @param[in] pvChecks  multithreaded rangeproof and commitment checker
- * @param[in] cacheStore signal if rangeproof verification should be cached
- * @return  True if totals are identical
+ * @param[in] pvChecks  multithreaded rangeproof, surjection proof and commitment checker
+ * @param[in] cacheStore signal if rangeproof and surjection proof verification should be cached
+ * @return  True if verification was not aborted and totals are identical
 */
 bool VerifyAmounts(const CCoinsViewCache& cache, const CTransaction& tx, std::vector<CCheck*>* pvChecks = NULL, const bool cacheStore = false);
 
@@ -481,7 +497,6 @@ class CScriptCheck : public CCheck
 private:
     CScript scriptPubKey;
     CConfidentialValue amount;
-    CConfidentialValue amountPreviousInput;
     const CTransaction *ptxTo;
     unsigned int nIn;
     unsigned int nFlags;
@@ -489,9 +504,8 @@ private:
     PrecomputedTransactionData *txdata;
 
 public:
-    CScriptCheck(const CCoins& txFromIn, const CTransaction& txToIn, unsigned int nInIn, const CConfidentialValue& amountPreviousInputIn, unsigned int nFlagsIn, bool cacheIn, PrecomputedTransactionData* txdataIn) :
+    CScriptCheck(const CCoins& txFromIn, const CTransaction& txToIn, unsigned int nInIn, unsigned int nFlagsIn, bool cacheIn, PrecomputedTransactionData* txdataIn) :
         scriptPubKey(txFromIn.vout[txToIn.vin[nInIn].prevout.n].scriptPubKey), amount(txFromIn.vout[txToIn.vin[nInIn].prevout.n].nValue),
-        amountPreviousInput(amountPreviousInputIn),
         ptxTo(&txToIn), nIn(nInIn), nFlags(nFlagsIn), cacheStore(cacheIn), txdata(txdataIn) { }
 
     bool operator()();
@@ -520,7 +534,7 @@ bool ContextualCheckBlock(const CBlock& block, CValidationState& state, const Co
  *  Validity checks that depend on the UTXO set are also done; ConnectBlock()
  *  can fail if those validity checks fail (among other reasons). */
 bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockIndex* pindex, CCoinsViewCache& coins,
-                  const CChainParams& chainparams, std::set<std::pair<uint256, COutPoint> >* setWithdrawsSpent = NULL, bool fJustCheck = false);
+                  const CChainParams& chainparams, std::set<std::pair<uint256, COutPoint> >* setPeginsSpent = NULL, bool fJustCheck = false);
 
 /** Undo the effects of this block (with given index) on the UTXO set represented by coins.
  *  In case pfClean is provided, operation will try to be tolerant about errors, and *pfClean
@@ -542,6 +556,9 @@ void UpdateUncommittedBlockStructures(CBlock& block, const CBlockIndex* pindexPr
 
 /** Produce the necessary coinbase commitment for a block (modifies the hash, don't call for mined blocks). */
 std::vector<unsigned char> GenerateCoinbaseCommitment(CBlock& block, const CBlockIndex* pindexPrev, const Consensus::Params& consensusParams);
+
+/** Calculates script necessary for p2ch peg-in transactions */
+CScript calculate_contract(const CScript& federationRedeemScript, const CScript& witnessProgram);
 
 /** RAII wrapper for VerifyDB: Verify consistency of the block and coin databases */
 class CVerifyDB {

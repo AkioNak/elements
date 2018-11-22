@@ -65,9 +65,17 @@ struct Params {
     int64_t nPowTargetTimespan;
     int64_t DifficultyAdjustmentInterval() const { return nPowTargetTimespan / nPowTargetSpacing; }
     uint256 nMinimumChainWork;
+    // The redeemscript that the peg uses. Uses p2sh-p2wsh
     CScript fedpegScript;
     CAsset pegged_asset;
     uint256 defaultAssumeValid;
+    uint32_t pegin_min_depth;
+    CScript mandatory_coinbase_destination;
+    CScript signblockscript;
+    bool has_parent_chain;
+    CScript parent_chain_signblockscript;
+    CAsset parent_pegged_asset;
+    bool ParentChainHasPow() const { return parent_chain_signblockscript == CScript();}
 };
 } // namespace Consensus
 

@@ -6,6 +6,7 @@
 #ifndef BITCOIN_CHAINPARAMS_H
 #define BITCOIN_CHAINPARAMS_H
 
+#include "amount.h"
 #include "chainparamsbase.h"
 #include "consensus/params.h"
 #include "primitives/block.h"
@@ -89,9 +90,10 @@ public:
     const ChainTxData& TxData() const { return chainTxData; }
     void UpdateBIP9Parameters(Consensus::DeploymentPos d, int64_t nStartTime, int64_t nTimeout);
     /** All coinbase outputs (after genesis) must be to this destination */
-    const CScript& CoinbaseDestination() const { return scriptCoinbaseDestination; }
+    bool anyonecanspend_aremine;
 protected:
-    CChainParams() {}
+    CChainParams() = delete;
+    CChainParams(const std::string& chain) : strNetworkID(chain) {}
 
     Consensus::Params consensus;
     CMessageHeader::MessageStartChars pchMessageStart;
@@ -102,6 +104,8 @@ protected:
     std::string strNetworkID;
     CBlock genesis;
     uint256 parentGenesisBlockHash;
+    CAmount initialFreeCoins;
+    CAmount initial_reissuance_tokens;
     std::vector<SeedSpec6> vFixedSeeds;
     bool fMiningRequiresPeers;
     bool fDefaultConsistencyChecks;
@@ -109,7 +113,6 @@ protected:
     bool fMineBlocksOnDemand;
     CCheckpointData checkpointData;
     ChainTxData chainTxData;
-    CScript scriptCoinbaseDestination;
 };
 
 /**

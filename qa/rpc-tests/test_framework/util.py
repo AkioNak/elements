@@ -22,14 +22,19 @@ import subprocess
 import time
 import re
 import errno
+from pathlib import Path
 
 from . import coverage
 from .authproxy import AuthServiceProxy, JSONRPCException
 
 COVERAGE_DIR = None
 
+BITCOIN_ASSET = bytearray.fromhex("b2e15d0d7a0c94e4e2ce0fe6e8691b9e451377f6e46e8045a86f7c4b5d4f0f23")
+BITCOIN_ASSET.reverse()
+BITCOIN_ASSET_OUT = b"\x01"+BITCOIN_ASSET
+
 # The maximum number of nodes a single test can spawn
-MAX_NODES = 8
+MAX_NODES = 9
 # Don't assign rpc or p2p ports lower than this
 PORT_MIN = 11000
 # The number of ports to "reserve" for p2p and rpc, each
@@ -183,19 +188,24 @@ def initialize_datadir(dirname, n):
         os.makedirs(datadir)
     rpc_u, rpc_p = rpc_auth_pair(n)
     with open(os.path.join(datadir, "elements.conf"), 'w', encoding='utf8') as f:
-        f.write("regtest=1\n")
         f.write("rpcuser=" + rpc_u + "\n")
         f.write("rpcpassword=" + rpc_p + "\n")
         f.write("port="+str(p2p_port(n))+"\n")
         f.write("rpcport="+str(rpc_port(n))+"\n")
         f.write("listenonion=0\n")
+        f.write("initialfreecoins=2100000000000000\n")
     return datadir
 
 def rpc_auth_pair(n):
     return 'rpcuser💻' + str(n), 'rpcpass🔑' + str(n)
 
-def rpc_url(i, rpchost=None):
-    rpc_u, rpc_p = rpc_auth_pair(i)
+def rpc_url(i, rpchost=None, cookie_file=None):
+    if cookie_file:
+        with open(cookie_file, 'r') as f:
+            rpc_auth = f.readline()
+    else:
+        rpc_u, rpc_p = rpc_auth_pair(i)
+        rpc_auth = rpc_u+":"+rpc_p
     host = '127.0.0.1'
     port = rpc_port(i)
     if rpchost:
@@ -204,7 +214,7 @@ def rpc_url(i, rpchost=None):
             host, port = parts
         else:
             host = rpchost
-    return "http://%s:%s@%s:%d" % (rpc_u, rpc_p, host, int(port))
+    return "http://%s@%s:%d" % (rpc_auth, host, int(port))
 
 def wait_for_bitcoind_start(process, url, i):
     '''
@@ -329,19 +339,29 @@ def _rpchost_to_args(rpchost):
         rv += ['-rpcport=' + rpcport]
     return rv
 
-def start_node(i, dirname, extra_args=None, rpchost=None, timewait=None, binary=None):
+def start_node(i, dirname, extra_args=None, rpchost=None, timewait=None, binary=None, chain='elementsregtest', cookie_auth=False):
     """
     Start a bitcoind and return RPC connection to it
     """
     datadir = os.path.join(dirname, "node"+str(i))
+    cookie_file = datadir+"/"+chain+"/.cookie"
     if binary is None:
         binary = os.getenv("ELEMENTSD", "elementsd")
     args = [ binary, "-datadir="+datadir, "-server", "-keypool=1", "-discover=0", "-rest", "-mocktime="+str(get_mocktime()) ]
+    args.append('-regtest' if chain == 'regtest' else '-chain=' + chain)
     if extra_args is not None: args.extend(extra_args)
     bitcoind_processes[i] = subprocess.Popen(args)
     if os.getenv("PYTHON_DEBUG", ""):
         print("start_node: bitcoind started, waiting for RPC to come up")
-    url = rpc_url(i, rpchost)
+
+    # We need to make sure the cookie auth file is created before reading it
+    wait_for_cookie_time = 10
+    cookie_file_handle = Path(cookie_file)
+    while cookie_auth and wait_for_cookie_time > 0 and not cookie_file_handle.is_file():
+        wait_for_cookie_time -= 1
+        time.sleep(1)
+
+    url = rpc_url(i, rpchost, cookie_file if cookie_auth else None)
     wait_for_bitcoind_start(bitcoind_processes[i], url, i)
     if os.getenv("PYTHON_DEBUG", ""):
         print("start_node: RPC successfully started")
@@ -352,7 +372,7 @@ def start_node(i, dirname, extra_args=None, rpchost=None, timewait=None, binary=
 
     return proxy
 
-def start_nodes(num_nodes, dirname, extra_args=None, rpchost=None, timewait=None, binary=None):
+def start_nodes(num_nodes, dirname, extra_args=None, rpchost=None, timewait=None, binary=None, chain='elementsregtest'):
     """
     Start multiple bitcoinds, return RPC connections to them
     """
@@ -361,7 +381,7 @@ def start_nodes(num_nodes, dirname, extra_args=None, rpchost=None, timewait=None
     rpcs = []
     try:
         for i in range(num_nodes):
-            rpcs.append(start_node(i, dirname, extra_args[i], rpchost, timewait=timewait, binary=binary[i]))
+            rpcs.append(start_node(i, dirname, extra_args[i], rpchost, timewait=timewait, binary=binary[i], chain=chain))
     except: # If one node failed to start, stop the others
         stop_nodes(rpcs)
         raise

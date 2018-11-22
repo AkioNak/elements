@@ -99,6 +99,18 @@ if ENABLE_ZMQ:
         raise
 
 testScripts = [
+    # Elements-specific tests first
+    'confidential_transactions.py',
+    'signed_blockchain.py',
+    'initial_reissuance_token.py',
+    'feature_blocksign.py',
+    'feature_fedpeg.py',
+    'default_asset_name.py',
+    'assetdir.py',
+
+    # Elements' specially adapted tests second
+    'blockchain.py',
+
     # longest test should go first, to favor running tests in parallel
     'wallet-hd.py',
     #'walletbackup.py',
@@ -142,14 +154,13 @@ testScripts = [
     'signrawtransactions.py',
     'nodehandling.py',
     'decodescript.py',
-    #'blockchain.py',
     #'disablewallet.py',
     'keypool.py',
     'p2p-mempool.py',
     'prioritise_transaction.py',
     'invalidblockrequest.py',
     'invalidtxrequest.py',
-    'confidential_transactions.py',
+    'rpc_getblockstats.py',
     'preciousblock.py',
     #'p2p-segwit.py',
     #'importprunedfunds.py',
@@ -159,6 +170,7 @@ testScripts = [
     #'import-rescan.py',
     # TODO fix priority assumptions in test
     #'bumpfee.py',
+    'replace-by-fee.py',
     'rpcnamedargs.py',
     'listsinceblock.py',
     'p2p-leaktests.py',
@@ -193,7 +205,6 @@ testScriptsExt = [
     'invalidateblock.py',
     'maxblocksinflight.py',
     'p2p-acceptblock.py',
-    'replace-by-fee.py',
 ]
 
 

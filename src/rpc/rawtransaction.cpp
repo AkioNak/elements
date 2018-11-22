@@ -63,28 +63,46 @@ public:
 };
 static RPCRawTransaction_ECC_Init ecc_init_on_load;
 
-void ScriptPubKeyToJSON(const CScript& scriptPubKey, UniValue& out, bool fIncludeHex)
+static void SidehainScriptPubKeyToJSON(const CScript& scriptPubKey, UniValue& out, bool fIncludeHex, bool is_parent_chain)
 {
+    const std::string prefix = is_parent_chain ? "pegout_" : "";
     txnouttype type;
     vector<CTxDestination> addresses;
     int nRequired;
 
-    out.push_back(Pair("asm", ScriptToAsmStr(scriptPubKey)));
+    out.push_back(Pair(prefix + "asm", ScriptToAsmStr(scriptPubKey)));
     if (fIncludeHex)
-        out.push_back(Pair("hex", HexStr(scriptPubKey.begin(), scriptPubKey.end())));
+        out.push_back(Pair(prefix + "hex", HexStr(scriptPubKey.begin(), scriptPubKey.end())));
 
     if (!ExtractDestinations(scriptPubKey, type, addresses, nRequired)) {
-        out.push_back(Pair("type", GetTxnOutputType(type)));
+        out.push_back(Pair(prefix + "type", GetTxnOutputType(type)));
         return;
     }
 
-    out.push_back(Pair("reqSigs", nRequired));
-    out.push_back(Pair("type", GetTxnOutputType(type)));
+    out.push_back(Pair(prefix + "reqSigs", nRequired));
+    out.push_back(Pair(prefix + "type", GetTxnOutputType(type)));
 
     UniValue a(UniValue::VARR);
-    BOOST_FOREACH(const CTxDestination& addr, addresses)
-        a.push_back(CBitcoinAddress(addr).ToString());
-    out.push_back(Pair("addresses", a));
+    if (is_parent_chain) {
+        BOOST_FOREACH(const CTxDestination& addr, addresses)
+            a.push_back(CParentBitcoinAddress(addr).ToString());
+    } else {
+        BOOST_FOREACH(const CTxDestination& addr, addresses)
+            a.push_back(CBitcoinAddress(addr).ToString());
+    }
+    out.push_back(Pair(prefix + "addresses", a));
+}
+
+void ScriptPubKeyToJSON(const CScript& scriptPubKey, UniValue& out, bool fIncludeHex)
+{
+    SidehainScriptPubKeyToJSON(scriptPubKey, out, fIncludeHex, false);
+
+    uint256 pegout_chain;
+    CScript pegout_scriptpubkey;
+    if (scriptPubKey.IsPegoutScript(pegout_chain, pegout_scriptpubkey)) {
+        out.push_back(Pair("pegout_chain", pegout_chain.GetHex()));
+        SidehainScriptPubKeyToJSON(pegout_scriptpubkey, out, fIncludeHex, true);
+    }
 }
 
 void TxToJSON(const CTransaction& tx, const uint256 hashBlock, UniValue& entry)
@@ -96,7 +114,7 @@ void TxToJSON(const CTransaction& tx, const uint256 hashBlock, UniValue& entry)
     entry.push_back(Pair("vsize", (int)::GetVirtualTransactionSize(tx)));
     entry.push_back(Pair("version", tx.nVersion));
     entry.push_back(Pair("locktime", (int64_t)tx.nLockTime));
-    
+
     UniValue vin(UniValue::VARR);
     for (unsigned int i = 0; i < tx.vin.size(); i++) {
         const CTxIn& txin = tx.vin[i];
@@ -110,16 +128,23 @@ void TxToJSON(const CTransaction& tx, const uint256 hashBlock, UniValue& entry)
             o.push_back(Pair("asm", ScriptToAsmStr(txin.scriptSig, true)));
             o.push_back(Pair("hex", HexStr(txin.scriptSig.begin(), txin.scriptSig.end())));
             in.push_back(Pair("scriptSig", o));
+            in.push_back(Pair("is_pegin", txin.m_is_pegin));
         }
         if (tx.HasWitness()) {
-                UniValue scriptWitness(UniValue::VARR);
-                if (tx.wit.vtxinwit.size() > i) {
-                    for (unsigned int j = 0; j < tx.wit.vtxinwit[i].scriptWitness.stack.size(); j++) {
-                        std::vector<unsigned char> item = tx.wit.vtxinwit[i].scriptWitness.stack[j];
-                        scriptWitness.push_back(HexStr(item.begin(), item.end()));
-                    }
+            UniValue scriptWitness(UniValue::VARR);
+            UniValue pegin_witness(UniValue::VARR);
+            if (tx.wit.vtxinwit.size() > i) {
+                for (unsigned int j = 0; j < tx.wit.vtxinwit[i].scriptWitness.stack.size(); j++) {
+                    std::vector<unsigned char> item = tx.wit.vtxinwit[i].scriptWitness.stack[j];
+                    scriptWitness.push_back(HexStr(item.begin(), item.end()));
                 }
-                in.push_back(Pair("scriptWitness", scriptWitness));
+                for (unsigned int j = 0; j < tx.wit.vtxinwit[i].m_pegin_witness.stack.size(); j++) {
+                    std::vector<unsigned char> item = tx.wit.vtxinwit[i].m_pegin_witness.stack[j];
+                    pegin_witness.push_back(HexStr(item.begin(), item.end()));
+                }
+            }
+            in.push_back(Pair("scriptWitness", scriptWitness));
+            in.push_back(Pair("pegin_witness", pegin_witness));
         }
         const CAssetIssuance& issuance = txin.assetIssuance;
         if (!issuance.IsNull()) {
@@ -130,7 +155,7 @@ void TxToJSON(const CTransaction& tx, const uint256 hashBlock, UniValue& entry)
             uint256 entropy;
             if (issuance.assetBlindingNonce.IsNull()) {
                 GenerateAssetEntropy(entropy, txin.prevout, issuance.assetEntropy);
-                issue.push_back(Pair("assetEntropy", HexStr(entropy)));
+                issue.push_back(Pair("assetEntropy", entropy.GetHex()));
                 CalculateAsset(asset, entropy);
                 CalculateReissuanceToken(token, entropy, issuance.nAmount.IsCommitment());
                 issue.push_back(Pair("isreissuance", false));
@@ -272,6 +297,15 @@ UniValue getrawtransaction(const JSONRPCRequest& request)
             "         \"reqSigs\" : n,            (numeric) The required sigs\n"
             "         \"type\" : \"pubkeyhash\",  (string) The type, eg 'pubkeyhash'\n"
             "         \"addresses\" : [           (json array of string)\n"
+            "           \"address\"        (string) elements address\n"
+            "           ,...\n"
+            "         ]\n"
+            "         \"pegout_chain\" : \"hex\", (string) (only pegout) Hash of genesis block of parent chain'\n"
+            "         \"pegout_asm\":\"asm\",     (string) (only pegout) pegout scriptpubkey (asm)'\n"
+            "         \"pegout_hex\":\"hex\",     (string) (only pegout) pegout scriptpubkey (hex)'\n"
+            "         \"pegout_reqSigs\" : n,     (numeric) (only pegout) pegout required sigs\n"
+            "         \"pegout_type\" : \"pubkeyhash\", (string) (only pegout) The pegout type, eg 'pubkeyhash'\n"
+            "         \"pegout_addresses\" : [    (json array of string) (only pegout)\n"
             "           \"address\"        (string) bitcoin address\n"
             "           ,...\n"
             "         ]\n"
@@ -310,7 +344,7 @@ UniValue getrawtransaction(const JSONRPCRequest& request)
         }
         else {
             throw JSONRPCError(RPC_TYPE_ERROR, "Invalid type provided. Verbose parameter must be a boolean.");
-        } 
+        }
     }
 
     CTransactionRef tx;
@@ -469,9 +503,10 @@ UniValue createrawtransaction(const JSONRPCRequest& request)
             "     ]\n"
             "2. \"outputs\"               (object, required) a json object with outputs\n"
             "    {\n"
-            "      \"address\": x.xxx,    (numeric or string, required) The key is the bitcoin address, the numeric value (can be string) is the " + CURRENCY_UNIT + " amount\n"
-            "      \"data\": \"hex\"      (string, required) The key is \"data\", the value is hex encoded data\n"
-            "      \"fee\": x.xxx           (numeric or string, required) The key is \"fee\", the value the fee output you want to add.\n"
+            "      \"address\": x.xxx,    (numeric or string, optional) The key is the bitcoin address, the numeric value (can be string) is the " + CURRENCY_UNIT + " amount\n"
+            "      \"data\": \"hex\"      (string, optional) The key is \"data\", the value is hex encoded data\n"
+            "      \"vdata\": \"hex\"     (string, optional) The key is \"vdata\", the value is an array of hex encoded data\n"
+            "      \"fee\": x.xxx         (numeric or string, optional) The key is \"fee\", the value the fee output you want to add.\n"
             "      ,...\n"
             "    }\n"
             "3. locktime                  (numeric, optional, default=0) Raw locktime. Non-0 value also locktime-activates inputs\n"
@@ -563,6 +598,16 @@ UniValue createrawtransaction(const JSONRPCRequest& request)
             std::vector<unsigned char> data = ParseHexV(sendTo[name_].getValStr(),"Data");
 
             CTxOut out(asset, 0, CScript() << OP_RETURN << data);
+            rawTx.vout.push_back(out);
+        } else if (name_ == "vdata") {
+            UniValue vdata = sendTo[name_].get_array();
+            CScript datascript = CScript() << OP_RETURN;
+            for (size_t i = 0; i < vdata.size(); i++) {
+                std::vector<unsigned char> data = ParseHexV(vdata[i].get_str(), "Data");
+                datascript << data;
+            }
+
+            CTxOut out(asset, 0, datascript);
             rawTx.vout.push_back(out);
         } else if (name_ == "fee") {
             CAmount nAmount = AmountFromValue(sendTo[name_]);
@@ -1075,7 +1120,7 @@ UniValue decoderawtransaction(const JSONRPCRequest& request)
 
     CMutableTransaction mtx;
 
-    if (!DecodeHexTx(mtx, request.params[0].get_str(), true))
+    if (!DecodeHexTx(mtx, request.params[0].get_str()))
         throw JSONRPCError(RPC_DESERIALIZATION_ERROR, "TX decode failed");
 
     UniValue result(UniValue::VOBJ);
@@ -1199,6 +1244,7 @@ UniValue signrawtransaction(const JSONRPCRequest& request)
             "    }\n"
             "    ,...\n"
             "  ]\n"
+            "  \"warning\" : \"text\"            (string) Warning that a peg-in input signed may be immature. This could mean lack of connectivity to or misconfiguration of the bitcoind."
             "}\n"
 
             "\nExamples:\n"
@@ -1366,19 +1412,29 @@ UniValue signrawtransaction(const JSONRPCRequest& request)
     // Script verification errors
     UniValue vErrors(UniValue::VARR);
 
+    // Track an immature peg-in that's otherwise valid, give warning
+    bool immature_pegin = false;
+
     // Use CTransaction for the constant parts of the
     // transaction to avoid rehashing.
     const CTransaction txConst(mergedTx);
-    // Sign what we can:
+    // Sign what we can, including peg-in inputs:
     for (unsigned int i = 0; i < mergedTx.vin.size(); i++) {
         CTxIn& txin = mergedTx.vin[i];
         const CCoins* coins = view.AccessCoins(txin.prevout.hash);
-        if (coins == NULL || !coins->IsAvailable(txin.prevout.n)) {
+        if (!txin.m_is_pegin && (coins == NULL || !coins->IsAvailable(txin.prevout.n))) {
             TxInErrorToJSON(txin, vErrors, "Input not found or already spent");
             continue;
+        } else if (txin.m_is_pegin && (txConst.wit.vtxinwit.size() <= i || !IsValidPeginWitness(txConst.wit.vtxinwit[i].m_pegin_witness, txin.prevout, false))) {
+            TxInErrorToJSON(txin, vErrors, "Peg-in input has invalid proof.");
+            continue;
         }
-        const CScript& prevPubKey = coins->vout[txin.prevout.n].scriptPubKey;
-        const CConfidentialValue& amount = coins->vout[txin.prevout.n].nValue;
+        // Report warning about immature peg-in though
+        if(txin.m_is_pegin && !IsValidPeginWitness(txConst.wit.vtxinwit[i].m_pegin_witness, txin.prevout, true)) {
+            immature_pegin = true;
+        }
+        const CScript& prevPubKey = txin.m_is_pegin ? GetPeginOutputFromWitness(txConst.wit.vtxinwit[i].m_pegin_witness).scriptPubKey : coins->vout[txin.prevout.n].scriptPubKey;
+        const CConfidentialValue& amount = txin.m_is_pegin ? GetPeginOutputFromWitness(txConst.wit.vtxinwit[i].m_pegin_witness).nValue : coins->vout[txin.prevout.n].nValue;
 
         SignatureData sigdata;
         // Only sign SIGHASH_SINGLE if there's a corresponding output:
@@ -1388,14 +1444,14 @@ UniValue signrawtransaction(const JSONRPCRequest& request)
         // ... and merge in other signatures:
         BOOST_FOREACH(const CMutableTransaction& txv, txVariants) {
             if (txv.vin.size() > i) {
-                sigdata = CombineSignatures(prevPubKey, TransactionNoWithdrawsSignatureChecker(&txConst, i, amount), sigdata, DataFromTransaction(txv, i));
+                sigdata = CombineSignatures(prevPubKey, TransactionSignatureChecker(&txConst, i, amount), sigdata, DataFromTransaction(txv, i));
             }
         }
 
         UpdateTransaction(mergedTx, i, sigdata);
 
         ScriptError serror = SCRIPT_ERR_OK;
-        if (!VerifyScript(txin.scriptSig, prevPubKey, (mergedTx.wit.vtxinwit.size() > i) ? &mergedTx.wit.vtxinwit[i].scriptWitness : NULL, STANDARD_SCRIPT_VERIFY_FLAGS, TransactionNoWithdrawsSignatureChecker(&txConst, i, amount), &serror)) {
+        if (!VerifyScript(txin.scriptSig, prevPubKey, (mergedTx.wit.vtxinwit.size() > i) ? &mergedTx.wit.vtxinwit[i].scriptWitness : NULL, STANDARD_SCRIPT_VERIFY_FLAGS, TransactionSignatureChecker(&txConst, i, amount), &serror)) {
             TxInErrorToJSON(txin, vErrors, ScriptErrorString(serror));
         }
     }
@@ -1406,6 +1462,9 @@ UniValue signrawtransaction(const JSONRPCRequest& request)
     result.push_back(Pair("complete", fComplete));
     if (!vErrors.empty()) {
         result.push_back(Pair("errors", vErrors));
+    }
+    if (immature_pegin) {
+        result.push_back(Pair("warning", "Possibly immature peg-in input(s) detected, signed anyways."));
     }
 
     AuditLogPrintf("%s : signrawtransaction %s\n", getUser(), EncodeHexTx(mergedTx));

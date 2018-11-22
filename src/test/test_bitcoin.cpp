@@ -10,6 +10,7 @@
 #include "consensus/consensus.h"
 #include "consensus/validation.h"
 #include "consensus/merkle.h"
+#include "policy/policy.h"
 #include "key.h"
 #include "validation.h"
 #include "miner.h"
@@ -37,7 +38,7 @@ FastRandomContext insecure_rand_ctx(true);
 extern bool fPrintToConsole;
 extern void noui_connect();
 
-BasicTestingSetup::BasicTestingSetup(const std::string& chainName)
+BasicTestingSetup::BasicTestingSetup(const std::string& chainName, const std::string& fedpegscript)
 {
         ECC_Start();
         SetupEnvironment();
@@ -47,7 +48,15 @@ BasicTestingSetup::BasicTestingSetup(const std::string& chainName)
         InitSurjectionproofCache();
         fPrintToDebugLog = false; // don't want to write to debug.log file
         fCheckBlockIndex = true;
+        // Hack to allow testing of fedpeg args
+        if (!fedpegscript.empty()) {
+            SoftSetArg("-fedpegscript", fedpegscript);
+        }
+        // MAX_MONEY
+        SoftSetArg("-initialfreecoins", "2100000000000000");
         SelectParams(chainName);
+        // Set policy asset for correct fee output generation
+        policyAsset = CAsset(uint256S(Params().GetConsensus().pegged_asset.GetHex()));
         noui_connect();
 }
 
@@ -57,7 +66,7 @@ BasicTestingSetup::~BasicTestingSetup()
         g_connman.reset();
 }
 
-TestingSetup::TestingSetup(const std::string& chainName) : BasicTestingSetup(chainName)
+TestingSetup::TestingSetup(const std::string& chainName, const std::string& fedpegscript) : BasicTestingSetup(chainName, fedpegscript)
 {
     const CChainParams& chainparams = Params();
         // Ideally we'd move all the RPC tests to the functional testing framework
@@ -65,13 +74,15 @@ TestingSetup::TestingSetup(const std::string& chainName) : BasicTestingSetup(cha
 
         RegisterAllCoreRPCCommands(tableRPC);
 
-    // Make genesis coinbase use out spend-key
+    int gen_size = Params().GenesisBlock().vtx.size();
+
+    // Make genesis second transaction(with spendable outputs) use out spend-key
     coinbaseKey.MakeNewKey(true);
     CScript scriptPubKey = CScript() <<  ToByteVector(coinbaseKey.GetPubKey()) << OP_CHECKSIG;
-    CMutableTransaction newCoinbase(*(Params().GenesisBlock().vtx[0]));
-    for (unsigned int i = 0; i < Params().GenesisBlock().vtx[0]->vout.size(); i++)
-        newCoinbase.vout[i].scriptPubKey = scriptPubKey;
-    const_cast<CBlock&>(Params().GenesisBlock()).vtx[0] = MakeTransactionRef(newCoinbase);
+    CMutableTransaction newTransaction(*(Params().GenesisBlock().vtx[gen_size-1]));
+    for (unsigned int i = 0; i < Params().GenesisBlock().vtx[gen_size-1]->vout.size(); i++)
+        newTransaction.vout[i].scriptPubKey = scriptPubKey;
+    const_cast<CBlock&>(Params().GenesisBlock()).vtx[gen_size-1] = MakeTransactionRef(newTransaction);
     const_cast<CBlock&>(Params().GenesisBlock()).hashMerkleRoot = BlockMerkleRoot(Params().GenesisBlock());
     const_cast<CBlock&>(Params().GenesisBlock()).proof = CProof(CScript()<<OP_TRUE, CScript());
     const_cast<Consensus::Params&>(Params().GetConsensus()).hashGenesisBlock = Params().GenesisBlock().GetHash();
@@ -114,8 +125,9 @@ TestChain100Setup::TestChain100Setup() : TestingSetup(CBaseChainParams::REGTEST)
 {
     // Generate a 100-block chain:
     CScript scriptPubKey = CScript() <<  ToByteVector(coinbaseKey.GetPubKey()) << OP_CHECKSIG;
-    assert(Params().GenesisBlock().vtx[0]->vout[0].scriptPubKey == scriptPubKey);
-    coinbaseTxns.push_back(*(Params().GenesisBlock().vtx[0]));
+    assert(Params().GenesisBlock().vtx[Params().GenesisBlock().vtx.size()-1]->vout[0].scriptPubKey == scriptPubKey);
+    // Get spendable outputs from genesis block, which is non-coinbase for regtest
+    coinbaseTxns.push_back(*(Params().GenesisBlock().vtx[Params().GenesisBlock().vtx.size()-1]));
     for (int i = 0; i < COINBASE_MATURITY; i++)
     {
         std::vector<CMutableTransaction> noTxns;
@@ -174,7 +186,7 @@ CTxMemPoolEntry TestMemPoolEntryHelper::FromTx(const CTransaction &txn, CTxMemPo
     CAmount inChainValue = pool && pool->HasNoInputsOf(txn) ? TotalValueOut(txn) : 0;
 
     return CTxMemPoolEntry(MakeTransactionRef(txn), nFee, nTime, dPriority, nHeight,
-                           inChainValue, spendsCoinbase, sigOpCost, lp, setWithdrawsSpent);
+                           inChainValue, spendsCoinbase, sigOpCost, lp, setPeginsSpent);
 }
 
 void Shutdown(void* parg)
